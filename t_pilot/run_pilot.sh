@@ -26,6 +26,8 @@ K="${K:-5}"
 SGLANG_PORT="${SGLANG_PORT:-30000}"
 SGLANG_URL="http://localhost:${SGLANG_PORT}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# 共用腳本（extract/verbalize/score/calibrate）住在 ../main_script；pilot_preview.py 才在本目錄
+MAIN="${MAIN_SCRIPT_DIR:-$(cd "$HERE/../main_script" && pwd)}"
 PY="${PYTHON:-python}"
 
 case "$MODEL_KEY" in
@@ -39,7 +41,7 @@ mkdir -p "$OUT" logs
 echo "=== [PILOT $MODEL_KEY] $(wc -l < "$PILOT_CSV") 列 · k=$K · port=$SGLANG_PORT ==="
 
 echo "--- 1/5 抽取 activations ---"
-"$PY" "$HERE/extract_activations.py" --pairs-csv "$PILOT_CSV" --model "$HF_MODEL" \
+"$PY" "$MAIN/extract_activations.py" --pairs-csv "$PILOT_CSV" --model "$HF_MODEL" \
     --nla-meta "$AV/nla_meta.yaml" --outdir "$OUT/activations" --keep-all
 ACT=$(ls "$OUT"/activations/activations_*.parquet | head -1)
 
@@ -54,17 +56,17 @@ for i in $(seq 1 120); do
 done
 
 echo "--- 3/5 AV verbalize (k=$K) ---"
-"$PY" "$HERE/verbalize.py" --activations "$ACT" --av-checkpoint "$AV" \
+"$PY" "$MAIN/verbalize.py" --activations "$ACT" --av-checkpoint "$AV" \
     --nla-repo "$NLA_REPO" --sglang-url "$SGLANG_URL" --k "$K" --temperature 0.8 \
     --out "$OUT/verbalizations.parquet"
 
 echo "--- 4/5 AR round-trip ---"
-"$PY" "$HERE/score_roundtrip.py" --descriptions "$OUT/verbalizations.parquet" \
+"$PY" "$MAIN/score_roundtrip.py" --descriptions "$OUT/verbalizations.parquet" \
     --activations "$ACT" --ar-checkpoint "$AR" --nla-repo "$NLA_REPO" \
     --out "$OUT/roundtrip.csv"
 
 echo "--- 5/5 τ 校準 + 人眼檢視 ---"
-"$PY" "$HERE/calibrate_gate.py" --scores "$OUT/roundtrip.csv" --out "$OUT/gate"
+"$PY" "$MAIN/calibrate_gate.py" --scores "$OUT/roundtrip.csv" --out "$OUT/gate"
 TAU=$("$PY" - "$OUT/gate.gated.csv" <<'PYEOF'
 import csv, sys, statistics
 rows=list(csv.DictReader(open(sys.argv[1],encoding="utf-8-sig")))

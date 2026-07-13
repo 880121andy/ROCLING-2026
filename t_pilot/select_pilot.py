@@ -144,7 +144,7 @@ def main() -> None:
     ap.add_argument("--pairs-csv", type=Path)
     ap.add_argument("--n", type=int, default=20)
     ap.add_argument("--core-only", action="store_true",
-                    help="只從台灣核心 baseline 抽（§12 之核心語料 10%）")
+                    help="只從台灣核心 baseline 抽（§12 之核心語料 10%%）")
     ap.add_argument("--min-naturalness", type=float, default=4.0)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", type=Path, default=Path("rq1_pilot.csv"))
