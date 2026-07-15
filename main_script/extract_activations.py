@@ -253,7 +253,12 @@ def run_extract(rows: list[dict], model: str, layer: int, outdir: Path,
                 )
                 records.append(rec)
 
-    d_model = int(net.config.hidden_size)
+    _cfg = net.config
+    _hidden = (getattr(_cfg, 'hidden_size', None)
+               or getattr(getattr(_cfg, 'text_config', None), 'hidden_size', None))
+    if _hidden is None:
+        raise AttributeError(f'no hidden_size on {type(_cfg).__name__} (.hidden_size / .text_config.hidden_size)')
+    d_model = int(_hidden)
     write_parquet(outdir / f"activations_{tag}.parquet", records, d_model)
     print(f"  抽取完成：{len(records)} 向量（跳過 {n_bad}）"
           f" -> {outdir}/activations_{tag}.parquet  d_model={d_model}")

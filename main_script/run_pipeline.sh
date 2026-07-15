@@ -31,6 +31,39 @@ SGLANG_URL="http://localhost:${SGLANG_PORT}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PY="${PYTHON:-python}"
 
+SGLANG_PID=""
+
+# 關閉 SGLang server 及其所有 worker，等到 GPU 顯存真的釋放才返回。
+# 單卡時必要：AV server（~68 GiB）要先退場，AR 步驟才有空間載入同一張卡。
+# 只殺「本 server 的 process group」（步驟 2 用 setsid，PGID==leader PID），
+# 平行跑的另一模型（不同 port/不同 PGID）不受影響。
+stop_sglang() {
+    [ -n "${SGLANG_PID:-}" ] || return 0
+    local pid="$SGLANG_PID"; SGLANG_PID=""   # 先清空，避免 EXIT trap 重複進來
+    echo "  釋放顯存：關閉 SGLang（PGID $pid）…"
+    kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+
+    # 等整個 process group 消失（持有顯存的是 worker，不能靠 cmdline 比對）
+    local gone="" i
+    for i in $(seq 1 24); do                 # 最長 ~120s
+        pgrep -g "$pid" >/dev/null 2>&1 || { gone=1; break; }
+        sleep 5
+    done
+    if [ -z "$gone" ]; then
+        echo "  [警告] 120s 未完全退出，改送 SIGKILL。"
+        kill -KILL -"$pid" 2>/dev/null || true
+        sleep 5
+    fi
+
+    sleep 3                                   # 讓 driver 回收顯存
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        local gpu="${CUDA_VISIBLE_DEVICES:-}"; gpu="${gpu%%,*}"
+        echo -n "  顯存 free/total： "
+        nvidia-smi --query-gpu=memory.free,memory.total --format=csv,noheader \
+            ${gpu:+-i "$gpu"} 2>/dev/null | head -1 || echo "(查詢失敗)"
+    fi
+}
+
 case "$MODEL_KEY" in
   qwen)
     HF_MODEL="Qwen/Qwen2.5-7B-Instruct"
@@ -60,12 +93,12 @@ ACT_PARQUET=$(ls "$OUT"/activations/activations_*.parquet | head -1)
 
 # --- 步驟 2：掛 AV SGLang server（背景），並在結束時關掉 --------------------
 echo "--- 2/5 launch AV SGLang server ---"
-"$PY" -m sglang.launch_server \
+setsid "$PY" -m sglang.launch_server \
     --model-path "$AV_CKPT" --port "$SGLANG_PORT" \
     --disable-radix-cache $EXTRA_SGLANG \
     > "logs/sglang_${MODEL_KEY}.log" 2>&1 &
 SGLANG_PID=$!
-trap 'echo "關閉 SGLang ($SGLANG_PID)"; kill $SGLANG_PID 2>/dev/null || true' EXIT
+trap stop_sglang EXIT
 
 echo "等待 server 就緒（$SGLANG_URL）…"
 for i in $(seq 1 120); do
@@ -80,6 +113,10 @@ echo "--- 3/5 AV verbalize (k=5) ---"
     --activations "$ACT_PARQUET" --av-checkpoint "$AV_CKPT" \
     --nla-repo "$NLA_REPO" --sglang-url "$SGLANG_URL" \
     --k 5 --temperature 0.8 --out "$OUT/verbalizations.parquet"
+
+# --- 步驟 3.5：AV 完成，關閉 server 釋放顯存給 AR（單卡必要）--------------
+echo "--- AV 完成，關閉 server 釋放顯存 ---"
+stop_sglang
 
 # --- 步驟 4：AR round-trip 忠實度（不需 server）---------------------------
 echo "--- 4/5 AR round-trip score ---"
