@@ -53,7 +53,10 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 
 # 復用經稽核的 offset 定位邏輯（與 tokenizer 報告同一套）
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_ROOT = Path(__file__).resolve().parent.parent
+for _p in (_ROOT, _ROOT / "verify_script"):      # verify_tokenization.py 位於 verify_script/
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 from verify_tokenization import find_mention_char_spans, locate_token_span  # noqa: E402
 
 # 每句需保留、供後續 join 的 metadata 欄位（不強制全部存在）

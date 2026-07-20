@@ -26,6 +26,9 @@ gate.gated.csv  +  gate.summary.md
 analyze.py                          H1/H2/H4 迴歸、框架漂移、H3、幾何、H5
       ▼
 analysis.report.md
+
+activations_*.parquet ──┐
+rq1_review_all.csv    ──┴─ steer.py（因果驗證，不需 AV/AR）→ steer.report.md
 ```
 
 ## 腳本與 pipeline 階段對照
@@ -37,7 +40,53 @@ analysis.report.md
 | `score_roundtrip.py` | 02 · AR round-trip 忠實度 | `roundtrip.csv` |
 | `calibrate_gate.py` | 03 · Layer 0 忠實度閘門（τ） | `gate.gated.csv`, `gate.summary.md` |
 | `analyze.py` | 03 · H1/H2/H4、漂移、H3、幾何、H5 | `analysis.report.md` |
+| `steer.py` | 03 · **因果驗證**：Δ_lang activation steering | `steer.{scores,generations}.csv`, `steer.report.md` |
 | `run_pipeline.sh` | 02→03 單模型端到端 orchestration | 上述全部 |
+
+## 因果驗證（`steer.py`）——把相關性升級成因果
+
+`analyze.py` 給的是「en 語境的向量描述較常落入 geopolitical frame」這種**相關**證據；
+`steer.py` 直接把 Δ_lang ＝ mean(en) − mean(zh) 注入中文語境的殘差流，看下游行為是否偏移
+（教授指示的最後一項）。只需原始 activations parquet 與語料 CSV，**不需要 AV/AR checkpoint、
+不需要 SGLang**，因此可與 NLA 那條鏈分開跑。
+
+主估計量是逐題配對的 delta-of-delta：
+
+```
+S_i(α) = mean logP(地緣政治續句 | 中文前綴 i, α) − mean logP(日常生活續句 | 中文前綴 i, α)
+效應   = S_i(α) − S_i(0)          ← α=0 的組內相減抵消續句先天詞頻／長度偏誤
+```
+
+控制組（證明力來源）：劑量反應 α∈{−2,−1,0,1,2}、**反向注入 α<0 必須反向**、
+同 norm 隨機方向、控制實體（日本／冰島）的 Δ、以及 Δ_台灣 ⊥ Δ_控制實體 的
+**台灣特異殘差分量**（實測 cos(Δ_台灣, Δ_控制) ≈ 0.64，故這條必看）；
+另有逐 token 平均 logP 的流暢度護欄，避免把「模型被弄壞」誤讀成效應。
+去循環性以 LOFO 處理：測試前綴屬框架 f 時，Δ 只用非 f 的句子估計。
+
+```bash
+# 0) 上機第一件事：驗證注入點 == 抽取點（hidden_states[L] 由 layers[L-1] 產生）
+python main_script/steer.py --verify-hook \
+    --model Qwen/Qwen2.5-7B-Instruct --nla-meta $CKPT_ROOT/nla-qwen2.5-7b-L20-av/nla_meta.yaml
+
+# 1) 主實驗
+python main_script/steer.py \
+    --activations results/qwen/activations/activations_Qwen2.5-7B-Instruct.parquet \
+    --pairs-csv rq1_review_all.csv --model Qwen/Qwen2.5-7B-Instruct \
+    --nla-meta $CKPT_ROOT/nla-qwen2.5-7b-L20-av/nla_meta.yaml --out results/qwen/steer
+
+# Gemma 同理（--model google/gemma-3-12b-it，layers 在 language_model 下，腳本自動解析）
+# 不載模型只看 Δ 與前綴：--dry-run ／ 無 torch 邏輯自測：--self-test
+```
+
+⚠️ **α 的尺度不可跨模型直接比**：實測 ‖Δ_lang‖／平均‖h‖ 在 Qwen L20 約 **0.46**、
+Gemma L32 約 **0.12**（Gemma 的 embed 有 √d 縮放，殘差流量級大）。同一個 α 在 Gemma 是
+**弱得多的推力**，若 α=±1 看似無效應，先用更寬的 `--alphas -8 -4 -2 0 2 4 8` 確認是劑量
+不足而非沒有效應；跨模型請比較**劑量反應曲線**，不要比單一 α 的點值（腳本啟動時會自動提醒）。
+
+⚠️ **`--verify-hook` 不可略過**：`extract_activations.py` 取 `hidden_states[L]`，
+而 `hidden_states[0]` 是 embedding 輸出 → 對應的是 `layers[L-1]` 的輸出。差一層，
+整份因果證據就作廢。另注意 `hidden_states[n_layers]`（最後一層）已過 final norm，
+與 `layers[n_layers-1]` 的輸出**不相等**——Qwen L20/28、Gemma L32/48 皆為中間層，不受影響。
 
 ## 前置環境（TWCC）
 
