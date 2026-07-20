@@ -52,11 +52,18 @@ import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-# 復用經稽核的 offset 定位邏輯（與 tokenizer 報告同一套）
-_ROOT = Path(__file__).resolve().parent.parent
-for _p in (_ROOT, _ROOT / "verify_script"):      # verify_tokenization.py 位於 verify_script/
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+# 復用經稽核的 offset 定位邏輯（與 tokenizer 報告同一套）。
+# verify_tokenization.py 的位置在本 repo 歷史上搬動過，故用搜尋而非猜測（與 steer.py 同一套）。
+_HERE = Path(__file__).resolve().parent
+_SEARCH_DIRS = [_HERE, _HERE.parent, _HERE.parent / "verify_script", _HERE.parent / "pipeline"]
+for _p in _SEARCH_DIRS:
+    if (_p / "verify_tokenization.py").exists():
+        if str(_p) not in sys.path:
+            sys.path.insert(0, str(_p))
+        break
+else:
+    raise SystemExit("[錯誤] 找不到 verify_tokenization.py；已搜尋：\n  "
+                     + "\n  ".join(str(p) for p in _SEARCH_DIRS))
 from verify_tokenization import find_mention_char_spans, locate_token_span  # noqa: E402
 
 # 每句需保留、供後續 join 的 metadata 欄位（不強制全部存在）
